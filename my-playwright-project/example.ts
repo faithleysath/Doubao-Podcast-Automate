@@ -44,30 +44,14 @@ async function runDemo() {
 
     // 5. 生成播客
     // 我们使用项目中的示例 PDF 文件
-    const documentToProcess = path.join(__dirname, '..', '2502.00706v1.pdf');
+    const documentToProcess = path.join(__dirname, '2502.00706v1.pdf');
     console.log(`准备处理文件: ${documentToProcess}`);
 
-    const audioFilePath = await sdk.generatePodcast(documentToProcess);
+    const podcastResult = await sdk.generatePodcast(documentToProcess);
 
     console.log('🎉 演示完成！');
-    console.log(`音频文件已成功下载至: ${audioFilePath}`);
-
-    // 6. (可选) 使用导出的鉴权信息重新初始化一个新的SDK实例
-    if (exportedState) {
-        console.log('\n--- 演示使用已保存的鉴权信息 ---');
-        const sdk2 = new DoubaoSdk({
-            workspace: __dirname,
-            headless: false,
-            storageState: exportedState
-        });
-        try {
-            await sdk2.init();
-            // 直接调用需要登录的功能，无需再次调用 login()
-            console.log('使用已保存的会话初始化新SDK成功，无需再次登录。');
-        } finally {
-            await sdk2.destroy();
-        }
-    }
+    console.log(`音频标题: ${podcastResult.title}`);
+    console.log(`音频文件已成功下载至: ${podcastResult.filePath}`);
 
   } catch (error) {
     console.error('SDK 演示过程中发生错误:', error);

@@ -3,11 +3,76 @@ import path from 'path';
 import fs from 'fs';
 import crypto from 'crypto';
 
+// 自定义错误类
+export class DoubaoSdkError extends Error {
+  public readonly code: string;
+  public readonly details?: any;
+
+  constructor(message: string, code: string, details?: any) {
+    super(message);
+    this.name = 'DoubaoSdkError';
+    this.code = code;
+    this.details = details;
+    
+    // 确保堆栈跟踪正确显示
+    if (Error.captureStackTrace) {
+      Error.captureStackTrace(this, DoubaoSdkError);
+    }
+  }
+}
+
+export class InitializationError extends DoubaoSdkError {
+  constructor(message: string, details?: any) {
+    super(message, 'INITIALIZATION_ERROR', details);
+    this.name = 'InitializationError';
+  }
+}
+
+export class LoginError extends DoubaoSdkError {
+  constructor(message: string, details?: any) {
+    super(message, 'LOGIN_ERROR', details);
+    this.name = 'LoginError';
+  }
+}
+
+export class FileNotFoundError extends DoubaoSdkError {
+  constructor(filePath: string, details?: any) {
+    super(`文件不存在: ${filePath}`, 'FILE_NOT_FOUND', details);
+    this.name = 'FileNotFoundError';
+  }
+}
+
+export class TaskCreationError extends DoubaoSdkError {
+  constructor(message: string, details?: any) {
+    super(message, 'TASK_CREATION_ERROR', details);
+    this.name = 'TaskCreationError';
+  }
+}
+
+export class DownloadError extends DoubaoSdkError {
+  constructor(message: string, details?: any) {
+    super(message, 'DOWNLOAD_ERROR', details);
+    this.name = 'DownloadError';
+  }
+}
+
+export class TimeoutError extends DoubaoSdkError {
+  constructor(message: string, timeoutMs: number, details?: any) {
+    super(message, 'TIMEOUT_ERROR', { timeoutMs, ...details });
+    this.name = 'TimeoutError';
+  }
+}
+
 interface DoubaoSdkOptions {
   workspace: string;
   headless?: boolean;
   browserWSEndpoint?: string;
   storageState?: Awaited<ReturnType<BrowserContext['storageState']>>;
+}
+
+export interface PodcastDownloadResult {
+  filePath: string;
+  title: string;
 }
 
 export class DoubaoSdk {
@@ -52,7 +117,7 @@ export class DoubaoSdk {
 
   async login(onQRCode: (qrCodeBase64: string) => Promise<void>, timeout: number = 300000): Promise<{ status: 'LOGGED_IN' }> {
     if (!this.page || !this.context) {
-      throw new Error('SDK尚未初始化，请先调用 init() 方法。');
+      throw new InitializationError('SDK尚未初始化，请先调用 init() 方法。');
     }
     const page = this.page;
     try {
@@ -75,7 +140,7 @@ export class DoubaoSdk {
 
       const qrCodeSrc = await qrCodeLocator.getAttribute('src');
       if (!qrCodeSrc) {
-        throw new Error('未能获取二维码图像的 src 属性。');
+        throw new LoginError('未能获取二维码图像的 src 属性。');
       }
 
       const base64Data = qrCodeSrc.replace(/^data:image\/png;base64,/, '');
@@ -89,16 +154,16 @@ export class DoubaoSdk {
       return { status: 'LOGGED_IN' };
     } catch (error) {
       console.error(`❌ 在 ${timeout / 1000} 秒内未检测到登录。`);
-      throw new Error('Login confirmation timeout');
+      throw new TimeoutError('登录确认超时', timeout, { originalError: error });
     }
   }
 
   async createPodcastTask(documentPath: string): Promise<string> {
     if (!this.page || !this.context) {
-      throw new Error('SDK尚未初始化或页面未创建，请先调用 init() 方法。');
+      throw new InitializationError('SDK尚未初始化或页面未创建，请先调用 init() 方法。');
     }
     if (!fs.existsSync(documentPath)) {
-      throw new Error(`文件不存在: ${documentPath}`);
+      throw new FileNotFoundError(documentPath);
     }
     const page = this.page;
 
@@ -127,16 +192,16 @@ export class DoubaoSdk {
     const url = page.url();
     const taskId = url.split('/').pop();
     if (!taskId) {
-      throw new Error('无法从URL中解析任务ID。');
+      throw new TaskCreationError('无法从URL中解析任务ID。', { url });
     }
     console.log(`任务已创建，ID: ${taskId}`);
     this.storageState = await this.context.storageState();
     return taskId;
   }
 
-  async downloadPodcast(taskId: string): Promise<string | null> {
+  async downloadPodcast(taskId: string): Promise<PodcastDownloadResult | null> {
     if (!this.page || !this.context) {
-      throw new Error('SDK尚未初始化或页面未创建，请先调用 init() 方法。');
+      throw new InitializationError('SDK尚未初始化或页面未创建，请先调用 init() 方法。');
     }
     const page = this.page;
     const taskUrl = `https://www.doubao.com/chat/${taskId}`;
@@ -163,31 +228,67 @@ export class DoubaoSdk {
         downloadButtonLocator.click()
       ]);
 
-      // 等待下载完成并获取临时路径
-      const tempPath = await download.path();
-      if (!tempPath) {
-        throw new Error('下载失败，未能获取临时文件路径。');
-      }
-
-      // 计算音频文件的哈希
-      const fileBuffer = fs.readFileSync(tempPath);
-      const hashSum = crypto.createHash('sha256');
-      hashSum.update(fileBuffer);
-      const hexHash = hashSum.digest('hex');
-
       const extension = path.extname(download.suggestedFilename());
       const downloadsDir = path.join(this.options.workspace, 'downloads');
       if (!fs.existsSync(downloadsDir)) {
         fs.mkdirSync(downloadsDir, { recursive: true });
       }
-      const savePath = path.join(downloadsDir, `${hexHash}${extension}`);
 
-      // 移动文件到最终位置
-      fs.renameSync(tempPath, savePath);
+      let savePath: string;
+      let fileBuffer: Buffer;
+
+      if (this.options.browserWSEndpoint) {
+        // 远程浏览器：使用流方式读取文件内容
+        console.log('检测到远程浏览器，使用流方式下载文件...');
+        
+        const readableStream = await download.createReadStream();
+        if (!readableStream) {
+          throw new DownloadError('远程浏览器下载失败，无法创建读取流。');
+        }
+
+        // 将流转换为 Buffer
+        const chunks: Buffer[] = [];
+        for await (const chunk of readableStream) {
+          chunks.push(chunk);
+        }
+        fileBuffer = Buffer.concat(chunks);
+
+        // 计算文件哈希
+        const hashSum = crypto.createHash('sha256');
+        hashSum.update(fileBuffer);
+        const hexHash = hashSum.digest('hex');
+
+        savePath = path.join(downloadsDir, `${hexHash}${extension}`);
+
+        // 直接写入文件
+        fs.writeFileSync(savePath, fileBuffer);
+      } else {
+        // 本地浏览器：使用原有逻辑
+        console.log('检测到本地浏览器，使用临时文件方式...');
+        
+        const tempPath = await download.path();
+        if (!tempPath) {
+          throw new DownloadError('本地浏览器下载失败，未能获取临时文件路径。');
+        }
+
+        // 读取文件并计算哈希
+        fileBuffer = fs.readFileSync(tempPath);
+        const hashSum = crypto.createHash('sha256');
+        hashSum.update(fileBuffer);
+        const hexHash = hashSum.digest('hex');
+
+        savePath = path.join(downloadsDir, `${hexHash}${extension}`);
+
+        // 移动文件到最终位置
+        fs.renameSync(tempPath, savePath);
+      }
 
       console.log(`🚀 文件下载成功，已保存至: ${savePath}`);
       this.storageState = await this.context.storageState();
-      return savePath;
+      return {
+        filePath: savePath,
+        title: reportTitle
+      };
     } else {
       console.log("❌ 按钮仍处于禁用状态。");
       this.storageState = await this.context.storageState();
@@ -195,7 +296,7 @@ export class DoubaoSdk {
     }
   }
 
-  async generatePodcast(documentPath: string): Promise<string> {
+  async generatePodcast(documentPath: string): Promise<PodcastDownloadResult> {
     const taskId = await this.createPodcastTask(documentPath);
 
     const maxRetries = 90;
@@ -203,9 +304,9 @@ export class DoubaoSdk {
 
     for (let i = 0; i < maxRetries; i++) {
       console.log(`--- 第 ${i + 1}/${maxRetries} 次尝试下载 ---`);
-      const downloadedPath = await this.downloadPodcast(taskId);
-      if (downloadedPath) {
-        return downloadedPath;
+      const downloadResult = await this.downloadPodcast(taskId);
+      if (downloadResult) {
+        return downloadResult;
       }
 
       if (i < maxRetries - 1) {
@@ -214,7 +315,11 @@ export class DoubaoSdk {
       }
     }
 
-    throw new Error("轮询失败，已达到最大尝试次数。");
+    const totalTimeoutMs = maxRetries * pollIntervalSeconds * 1000;
+    throw new TimeoutError("轮询失败，已达到最大尝试次数。", totalTimeoutMs, { 
+      maxRetries, 
+      pollIntervalSeconds 
+    });
   }
 
   async destroy(): Promise<void> {
