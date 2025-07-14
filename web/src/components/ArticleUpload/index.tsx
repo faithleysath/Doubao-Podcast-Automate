@@ -48,9 +48,15 @@ export default function ArticleUpload({
         // 清空文件输入框
     }, []);
 
+    // 处理主要按钮
     const handlePrimaryButton = useCallback(() => {
 
     }, []);
+
+    // 处理文件输入框变化
+    const handleFileInputChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+        
+    }, [])
     
     return (
         <div
@@ -150,7 +156,8 @@ export default function ArticleUpload({
             {/* 隐藏的文件输入 */}
             < input
                 ref={fileInputRef}
-                
+                type='file'
+                className="hidden"
 
         </div>
     )
