@@ -83,6 +83,10 @@ export default function ArticleUpload({
                 ? "border-blue-400 bg-blue-50/50"
                 : "border-gray-200 hover:border-gray-300"
             )}
+            onDragEnter={()=>{console.log("enter")}}
+            onDragLeave={()=>{console.log("leave")}}
+            onDragOver={(e)=>{e.dataTransfer.dropEffect='copy';console.log("over")}}
+            onDrop={(e)=>{e.preventDefault();e.stopPropagation();console.log(e.dataTransfer.files[0].text());}}
         >
             {/* 进度条背景 */}
             {uploadStatus === 'uploading' && (
